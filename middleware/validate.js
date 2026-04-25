@@ -1,30 +1,19 @@
 import { z } from 'zod';
 
 // --- ELITE REUSABLE UTILS ---
-
-/**
- * REQ 6: Elite String Normalization
- * Trims, collapses multiple spaces into one, and enforces length
- */
 const eliteString = (max = 255) => 
   z.string()
     .transform(val => val.trim().replace(/\s+/g, ' ')) 
     .pipe(z.string().min(1, "Field cannot be empty").max(max));
 
-/**
- * REQ 7: ISO Date Guard
- * Ensures coercion doesn't produce 'Invalid Date' objects
- */
 const isoDate = z.coerce.date().refine(d => !isNaN(d.getTime()), {
   message: "Invalid ISO date format"
 });
 
-// --- SCHEMAS ---
+// 🚨 FIX: Custom MongoDB ObjectId Validator
+const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid MongoDB ID format");
 
-/**
- * REQ 3, 4, & 5: Hardened Pagination
- * Rejects unknown query keys and prevents deep-offset DoS
- */
+// --- SCHEMAS ---
 export const paginationSchema = z.object({
   query: z.object({
     page: z.coerce.number().int().min(1).default(1),
@@ -32,23 +21,18 @@ export const paginationSchema = z.object({
     status: z.string()
       .optional()
       .transform(val => val ? val.split(',') : ['upcoming', 'live'])
-      // Validate every status in the comma-separated list
       .refine(val => val.every(s => ['upcoming', 'live', 'completed', 'cancelled'].includes(s)), {
         message: "Invalid status filter detected"
       })
   })
-  .strict("Unknown query parameters detected") // REQ 5: Global rejection
+  .strict("Unknown query parameters detected") 
   .refine(data => (data.page * data.limit) <= 10000, {
-    message: "Requested offset is too deep (DoS protection)", // REQ 4
+    message: "Requested offset is too deep (DoS protection)", 
     path: ["page"]
   })
 });
 
 export const matchSchemas = {
-  
-  /**
-   * REQ 1 & 2: Logical Integrity for Match Creation
-   */
   createMatch: z.object({
     body: z.object({
       homeTeam: z.object({ name: eliteString(100) }),
@@ -58,11 +42,11 @@ export const matchSchemas = {
     })
     .strict()
     .refine(data => data.homeTeam.name.toLowerCase() !== data.awayTeam.name.toLowerCase(), {
-      message: "Home team and Away team cannot be the same", // REQ 1
+      message: "Home team and Away team cannot be the same", 
       path: ["awayTeam"]
     })
     .refine(data => data.startTime > new Date(), {
-      message: "Match start time must be in the future", // REQ 2
+      message: "Match start time must be in the future", 
       path: ["startTime"]
     })
     .refine(data => data.bettingCutoffTime < data.startTime, {
@@ -72,7 +56,7 @@ export const matchSchemas = {
   }),
 
   updateScore: z.object({
-    params: z.object({ matchId: z.string().uuid() }).strict(),
+    params: z.object({ matchId: objectId }).strict(), // 🚨 FIX: Replaced .uuid()
     body: z.object({
       home: z.coerce.number().int().nonnegative().max(1000),
       away: z.coerce.number().int().nonnegative().max(1000)
@@ -80,7 +64,7 @@ export const matchSchemas = {
   }),
 
   changeStatus: z.object({
-    params: z.object({ matchId: z.string().uuid() }).strict(),
+    params: z.object({ matchId: objectId }).strict(), // 🚨 FIX: Replaced .uuid()
     body: z.object({
       status: z.enum(['upcoming', 'live', 'completed', 'cancelled']),
       reason: eliteString(200).default("Administrative update")
@@ -88,14 +72,11 @@ export const matchSchemas = {
   }),
 
   suspendMarket: z.object({
-    params: z.object({ matchId: z.string().uuid() }).strict()
+    params: z.object({ matchId: objectId }).strict() // 🚨 FIX: Replaced .uuid()
   })
 };
 
-/**
- * REQ 9: Advanced Error Formatter with Error Codes
- * Maps Zod errors to a standardized JSON structure for the frontend
- */
+// --- MIDDLEWARE ---
 export const validate = (schema) => (req, res, next) => {
   const result = schema.safeParse({
     body: req.body,
@@ -105,7 +86,7 @@ export const validate = (schema) => (req, res, next) => {
 
   if (!result.success) {
     const formattedErrors = result.error.errors.map(err => ({
-      code: "VALIDATION_ERROR", // REQ 9
+      code: "VALIDATION_ERROR", 
       field: err.path.join('.'),
       message: err.message
     }));
@@ -120,10 +101,18 @@ export const validate = (schema) => (req, res, next) => {
     });
   }
 
-  // Replace req data with validated/transformed data (crucial for normalization)
   req.body = result.data.body || req.body;
   req.query = result.data.query || req.query;
   req.params = result.data.params || req.params;
   
+  next();
+};
+
+// 🚨 FIX: Exported validateParam to prevent the routing crash
+// Since Zod already checks the param in the schemas above, this just acts as a safety pass-through
+export const validateParam = (paramName) => (req, res, next) => {
+  if (!req.params[paramName]) {
+    return res.status(400).json({ success: false, error: `Missing parameter: ${paramName}` });
+  }
   next();
 };
