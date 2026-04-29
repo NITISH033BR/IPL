@@ -44,7 +44,7 @@ export const createMatch = async (req, res) => {
 };
 
 export const updateScore = async (req, res) => {
-  const { matchId } = req.params;
+    const { matchId } = req.params;
   const { home, away } = req.body;
   
   // Clean, basic update logic without the Redis Lua scripts
